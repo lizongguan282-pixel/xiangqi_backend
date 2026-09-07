@@ -17,6 +17,11 @@ const EMOJI_CODE_RE = /^e([1-9]|[12][0-9]|30)$/
 const EMOJI_MIN_INTERVAL_MS = 500
 const emojiLastAt = new Map() // roomId -> last sent timestamp
 
+// 局内快捷语音：code 白名单 v1~v8，同一房间 500ms 限频（与 emoji 同构、独立计数）
+const PHRASE_CODE_RE = /^v([1-8])$/
+const PHRASE_MIN_INTERVAL_MS = 500
+const phraseLastAt = new Map() // roomId -> last sent timestamp
+
 export function initWs(server) {
   const wss = new WebSocketServer({ server, path: '/ws' })
 
@@ -60,6 +65,10 @@ export function initWs(server) {
       if (msg.type === 'emoji') {
         handleEmoji(userId, msg)
       }
+      // 局内快捷语音转发：与 emoji 同构，独立限频/白名单
+      if (msg.type === 'phrase') {
+        handlePhrase(userId, msg)
+      }
     })
     ws.on('error', () => {})
     ws.on('close', () => {
@@ -96,6 +105,30 @@ function handleEmoji(userId, msg) {
   for (const color of ['red', 'black']) {
     const p = room[color]
     if (p) sendToUser(p.userId, 'emoji', data)
+  }
+}
+
+// 处理上行 phrase：与 emoji 完全同构，仅 type/白名单/限频计数器不同；不落库
+function handlePhrase(userId, msg) {
+  const roomId = typeof msg.roomId === 'string' ? msg.roomId : ''
+  const code = typeof msg.code === 'string' ? msg.code : ''
+  const room = store.rooms.get(roomId)
+  if (!room) return // 房间不存在：静默丢弃
+  // 发送者必须是房间内 red/black 任一方，拒绝旁观者
+  const from = playerColor(room, userId)
+  if (!from) return
+  // code 白名单：v1~v8
+  if (!PHRASE_CODE_RE.test(code)) return
+  // 同房间 500ms 限频（与 emoji 独立计数），超出直接丢弃
+  const now = Date.now()
+  const last = phraseLastAt.get(roomId) || 0
+  if (now - last < PHRASE_MIN_INTERVAL_MS) return
+  phraseLastAt.set(roomId, now)
+  // from 由服务端按玩家颜色注入，绝不采信客户端
+  const data = { from, code }
+  for (const color of ['red', 'black']) {
+    const p = room[color]
+    if (p) sendToUser(p.userId, 'phrase', data)
   }
 }
 
